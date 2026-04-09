@@ -214,16 +214,51 @@ func downloadFile(repoID, filePath, saveDir string) error {
 	}
 	defer file.Close()
 
+	totalSize := startPos + resp.ContentLength
 	if isTerminal() {
-		totalSize := startPos + resp.ContentLength
 		bar := pb.Full.Start64(totalSize)
 		bar.SetCurrent(startPos)
 		defer bar.Finish()
 		_, err = io.Copy(file, bar.NewProxyReader(resp.Body))
 	} else {
-		_, err = io.Copy(file, resp.Body)
+		err = copyWithTextProgress(file, resp.Body, startPos, totalSize)
 	}
 	return err
+}
+
+// copyWithTextProgress copies src to dst, printing a new log line every 5%.
+func copyWithTextProgress(dst io.Writer, src io.Reader, startPos, totalSize int64) error {
+	const chunkSize = 256 * 1024 // 256 KB per read
+	buf := make([]byte, chunkSize)
+	written := startPos
+	lastPct := int64(-1)
+
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			written += int64(n)
+			if totalSize > 0 {
+				pct := (written * 100) / totalSize
+				if pct != lastPct { // print every 1%
+					fmt.Printf("⏳ %.1f MB / %.1f MB (%d%%)\n",
+						float64(written)/1024/1024,
+						float64(totalSize)/1024/1024,
+						pct)
+					lastPct = pct
+				}
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	return nil
 }
 
 func isTerminal() bool {
