@@ -1,0 +1,13 @@
+.DS_Store
+.idea/
+.vscode/
+release/
+*.zip
+*.exe
+logs/
+conf/
+build/
+mesa/
+dts/
+main.rc
+main.syso
