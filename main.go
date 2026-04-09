@@ -248,7 +248,13 @@ func daemonize(repoID string) {
 		Files: []*os.File{nil, logFd, logFd},
 	}
 
-	process, err := os.StartProcess(os.Args[0], append([]string{os.Args[0]}, childArgs...), procAttr)
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Printf("❌ 获取可执行文件路径失败：%v\n", err)
+		os.Exit(1)
+	}
+
+	process, err := os.StartProcess(execPath, append([]string{execPath}, childArgs...), procAttr)
 	if err != nil {
 		fmt.Printf("❌ 启动后台进程失败：%v\n", err)
 		os.Exit(1)
