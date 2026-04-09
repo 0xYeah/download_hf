@@ -111,6 +111,7 @@ function find_prev_release_commit() {
 }
 
 function gen_changelog_if_possible() {
+    local del_version_no="$1"
     local out_dir out_file prev_release_sha range_end range
     out_dir="changelog"
     mkdir -p "${out_dir}"
@@ -197,8 +198,7 @@ function git_handle_push() {
     local pre_del_version_no=$(get_pre_del_version_no "$current_version_no")
     echo "Pre Del Version With v"${pre_del_version_no}
 
-    gen_changelog_if_possible \
-    && rm -rf changelog/v${pre_del_version_no}.md \
+    gen_changelog_if_possible "${pre_del_version_no}" \
     && git add . \
     && git commit -m "Release:--: v${next_version_no}_$(date -u +"%Y-%m-%d_%H:%M:%S")"_"UTC" \
     && git tag v${next_version_no} \
