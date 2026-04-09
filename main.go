@@ -214,13 +214,24 @@ func downloadFile(repoID, filePath, saveDir string) error {
 	}
 	defer file.Close()
 
-	totalSize := startPos + resp.ContentLength
-	bar := pb.Full.Start64(totalSize)
-	bar.SetCurrent(startPos)
-	defer bar.Finish()
-
-	_, err = io.Copy(file, bar.NewProxyReader(resp.Body))
+	if isTerminal() {
+		totalSize := startPos + resp.ContentLength
+		bar := pb.Full.Start64(totalSize)
+		bar.SetCurrent(startPos)
+		defer bar.Finish()
+		_, err = io.Copy(file, bar.NewProxyReader(resp.Body))
+	} else {
+		_, err = io.Copy(file, resp.Body)
+	}
 	return err
+}
+
+func isTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 func daemonize(repoID string) {

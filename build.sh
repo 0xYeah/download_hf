@@ -27,7 +27,15 @@ GetOSType
 function package_zip() {
     local src_dir="$1" os="$2" arch="$3"
     local zip_name="${product_name}_${RUN_MODE}_${CURRENT_VERSION}_${os}_${arch}.zip"
-    (cd "${src_dir}/.." && zip -r "${upload_dir}/${zip_name}" "${arch}" >/dev/null)
+    local stage="${src_dir}/../${product_name}"
+    mkdir -p "${stage}"
+    if [[ "$os" == "windows" ]]; then
+        cp "${src_dir}/${product_name}.exe" "${stage}/${product_name}.exe"
+    else
+        cp "${src_dir}/${product_name}" "${stage}/${product_name}"
+    fi
+    (cd "${src_dir}/.." && zip -r "${upload_dir}/${zip_name}" "${product_name}" >/dev/null)
+    rm -rf "${stage}"
     echo "==> packaged ${zip_name}"
 }
 
