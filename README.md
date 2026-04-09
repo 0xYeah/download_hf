@@ -68,6 +68,9 @@ download_hf -o /data/models Jackrong/Qwopus3.5-27B-v3-GGUF
 # 后台下载
 download_hf -d Jackrong/Qwopus3.5-27B-v3-GGUF
 
+# 后台+ 国内镜像
+download_hf -p -d Jackrong/Qwopus3.5-27B-v3-GGUF
+
 # 组合：国内镜像 + 指定路径 + 后台运行
 download_hf -p -o /data/models -d Jackrong/Qwopus3.5-27B-v3-GGUF
 ```
