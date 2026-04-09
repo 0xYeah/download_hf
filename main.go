@@ -2,23 +2,21 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/0xYeah/download_hf/actions/download"
 	"github.com/0xYeah/download_hf/actions/update"
-	"github.com/cheggaaa/pb/v3"
 	"github.com/spf13/cobra"
 )
 
 const (
-	hfMirror  = "https://hf-mirror.com"
-	hfDirect  = "https://huggingface.co"
+	hfMirror    = "https://hf-mirror.com"
+	hfDirect    = "https://huggingface.co"
 	baseDirName = "download_models"
 )
 
@@ -61,7 +59,7 @@ func baseURL() string {
 	return hfDirect
 }
 
-func runDownload(cmd *cobra.Command, args []string) {
+func runDownload(_ *cobra.Command, args []string) {
 	repoID := args[0]
 
 	if daemonMode {
@@ -94,11 +92,10 @@ func runDownload(cmd *cobra.Command, args []string) {
 
 	fmt.Printf("📦 共 %d 个文件需要下载\n", len(files))
 
-	successCount := 0
-	failCount := 0
+	successCount, failCount := 0, 0
 	for i, file := range files {
 		fmt.Printf("\n===== 【%d/%d】 下载文件：%s =====\n", i+1, len(files), file)
-		if err := downloadFile(repoID, file, saveDir); err != nil {
+		if err := download.File(baseURL(), repoID, file, saveDir); err != nil {
 			fmt.Printf("❌ 下载失败：%v\n", err)
 			failCount++
 		} else {
@@ -167,108 +164,6 @@ func listModelFiles(repoID string) ([]string, error) {
 	return files, nil
 }
 
-func downloadFile(repoID, filePath, saveDir string) error {
-	fileURL := fmt.Sprintf("%s/%s/resolve/main/%s", baseURL(), repoID, filePath)
-	savePath := filepath.Join(saveDir, filePath)
-
-	// 确保子目录存在（模型可能有嵌套目录结构）
-	if err := os.MkdirAll(filepath.Dir(savePath), 0755); err != nil {
-		return fmt.Errorf("创建子目录失败: %w", err)
-	}
-
-	var startPos int64
-	if info, err := os.Stat(savePath); err == nil {
-		startPos = info.Size()
-		fmt.Printf("🔁 断点续传：已下载 %d 字节\n", startPos)
-	}
-
-	req, err := http.NewRequestWithContext(context.Background(), "GET", fileURL, nil)
-	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
-	}
-	if startPos > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startPos))
-	}
-
-	client := &http.Client{Timeout: 0}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("发送请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("下载失败，状态码：%d", resp.StatusCode)
-	}
-
-	flag := os.O_CREATE | os.O_WRONLY
-	if startPos > 0 {
-		flag |= os.O_APPEND
-	} else {
-		flag |= os.O_TRUNC
-	}
-
-	file, err := os.OpenFile(savePath, flag, 0644)
-	if err != nil {
-		return fmt.Errorf("打开文件失败: %w", err)
-	}
-	defer file.Close()
-
-	totalSize := startPos + resp.ContentLength
-	if isTerminal() {
-		bar := pb.Full.Start64(totalSize)
-		bar.SetCurrent(startPos)
-		defer bar.Finish()
-		_, err = io.Copy(file, bar.NewProxyReader(resp.Body))
-	} else {
-		err = copyWithTextProgress(file, resp.Body, startPos, totalSize)
-	}
-	return err
-}
-
-// copyWithTextProgress copies src to dst, printing a new log line every 5%.
-func copyWithTextProgress(dst io.Writer, src io.Reader, startPos, totalSize int64) error {
-	const chunkSize = 256 * 1024 // 256 KB per read
-	buf := make([]byte, chunkSize)
-	written := startPos
-	lastPct := int64(-1)
-
-	for {
-		n, readErr := src.Read(buf)
-		if n > 0 {
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-			written += int64(n)
-			if totalSize > 0 {
-				pct := (written * 100) / totalSize
-				if pct != lastPct { // print every 1%
-					fmt.Printf("⏳ %.1f MB / %.1f MB (%d%%)\n",
-						float64(written)/1024/1024,
-						float64(totalSize)/1024/1024,
-						pct)
-					lastPct = pct
-				}
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
-	return nil
-}
-
-func isTerminal() bool {
-	fi, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
-}
-
 func daemonize(repoID string) {
 	homeDir, _ := os.UserHomeDir()
 	logDir := filepath.Join(homeDir, baseDirName, "logs")
@@ -282,16 +177,11 @@ func daemonize(repoID string) {
 	}
 	defer logFd.Close()
 
-	// 传递除 --daemon 外的所有参数，保留 --cn-proxy 等标志
 	var childArgs []string
 	for _, arg := range os.Args[1:] {
 		if arg != "--daemon" && arg != "-d" && arg != "--daemon=true" {
 			childArgs = append(childArgs, arg)
 		}
-	}
-
-	procAttr := &os.ProcAttr{
-		Files: []*os.File{nil, logFd, logFd},
 	}
 
 	execPath, err := os.Executable()
@@ -300,13 +190,16 @@ func daemonize(repoID string) {
 		os.Exit(1)
 	}
 
-	process, err := os.StartProcess(execPath, append([]string{execPath}, childArgs...), procAttr)
+	process, err := os.StartProcess(execPath, append([]string{execPath}, childArgs...), &os.ProcAttr{
+		Files: []*os.File{nil, logFd, logFd},
+	})
 	if err != nil {
 		fmt.Printf("❌ 启动后台进程失败：%v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("✅ 后台下载已启动，PID：%d\n", process.Pid)
+	fmt.Printf("📡 子进程参数：%v\n", childArgs)
 	fmt.Printf("📄 日志查看：tail -f %s\n", logFile)
 	os.Exit(0)
 }
