@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/0xYeah/download_hf/actions/update"
 	"github.com/cheggaaa/pb/v3"
 	"github.com/spf13/cobra"
 )
@@ -45,7 +46,7 @@ func main() {
 	rootCmd.Flags().BoolVarP(&daemonMode, "daemon", "d", false, "后台运行（nohup 模式）")
 	rootCmd.Flags().BoolVarP(&cnProxy, "cn-proxy", "p", false, "使用国内镜像（hf-mirror.com），默认直连 huggingface.co")
 	rootCmd.Flags().StringVarP(&outputDir, "output", "o", "", "指定下载根目录（默认：~/download_models）")
-	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(update.Command(mVersion))
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ 错误：%v\n", err)

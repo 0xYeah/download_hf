@@ -1,4 +1,5 @@
-package main
+// Package update actions/update/update.go
+package update
 
 import (
 	"archive/zip"
@@ -13,30 +14,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "升级到最新版本",
-	Run:   runUpdate,
+// Command returns the update subcommand, wiring in the current binary version.
+func Command(version string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "update",
+		Short: "升级到最新版本",
+		Run: func(cmd *cobra.Command, args []string) {
+			run(version)
+		},
+	}
 }
 
-type ghRelease struct {
-	TagName string `json:"tag_name"`
-}
-
-func runUpdate(_ *cobra.Command, _ []string) {
+func run(currentVersion string) {
 	latest, err := fetchLatestVersion()
 	if err != nil {
 		fmt.Printf("❌ 获取最新版本失败：%v\n", err)
 		os.Exit(1)
 	}
 
-	if mVersion != "" && mVersion == latest {
-		fmt.Printf("✅ 已是最新版本 %s\n", mVersion)
+	if currentVersion != "" && currentVersion == latest {
+		fmt.Printf("✅ 已是最新版本 %s\n", currentVersion)
 		return
 	}
 
-	if mVersion != "" {
-		fmt.Printf("🔄 升级 %s -> %s\n", mVersion, latest)
+	if currentVersion != "" {
+		fmt.Printf("🔄 升级 %s -> %s\n", currentVersion, latest)
 	} else {
 		fmt.Printf("🔄 安装最新版本 %s\n", latest)
 	}
@@ -77,6 +79,10 @@ func runUpdate(_ *cobra.Command, _ []string) {
 	}
 
 	fmt.Printf("✅ 已升级到 %s\n", latest)
+}
+
+type ghRelease struct {
+	TagName string `json:"tag_name"`
 }
 
 func detectPlatform() (os_, arch string) {
