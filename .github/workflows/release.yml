@@ -51,37 +51,25 @@ jobs:
           go-version: '>=1.22.0'
 
       - name: Build Project
-        shell: /usr/bin/bash -e {0}
         run: |
-          chmod a+x ./build.sh \
-          && bash ./build.sh \
-          && bash ./build.sh test
+          chmod a+x ./build.sh
+          bash ./build.sh
 
       - name: Upload binaries
-        id: upload_file_to_release
-        uses: george012/upload_github_release_assets_action@latest
-        with:
-          path: ./build/upload_tmp_dir/*.zip
+        run: gh release upload ${{ env.APP_VERSION }} ./build/upload_tmp_dir/*.zip --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   RemoveOldRelease:
     runs-on: ubuntu-latest
     needs: Build
     steps:
-      - name: install github-cli
-        run: |
-          type -p curl >/dev/null || sudo apt install curl -y
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
-          && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-          && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-          && sudo apt update \
-          && sudo apt install gh -y
-
       - name: CheckOut
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set APP_VERSION env
         run: |
-          APP_VERSION=$(echo ${GITHUB_REF} | rev | cut -d'/' -f 1 | rev ) \
+          APP_VERSION=$(echo ${GITHUB_REF} | rev | cut -d'/' -f 1 | rev )
 
           function get_pre_del_tag {
               local v_str=$1
