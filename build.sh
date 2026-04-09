@@ -105,7 +105,7 @@ function toBuild() {
     fi
 
     build_time=$(date -u +"%Y-%m-%d_%H:%M:%S")
-    ld_flag_master="-X main.mGitCommitHash=${commit_hash} -X main.mGitCommitTime=${formatted_time} -X main.mGoVersion=${go_version} -X main.mPackageOS=${OS_TYPE} -X main.mPackageTime=${build_time} -X main.mRunMode=${RUN_MODE} -s -w"
+    ld_flag_master="-X main.mGitCommitHash=${commit_hash} -X main.mGitCommitTime=${formatted_time} -X main.mGoVersion=${go_version} -X main.mPackageOS=${OS_TYPE} -X main.mPackageTime=${build_time} -X main.mRunMode=${RUN_MODE} -X main.mVersion=${CURRENT_VERSION} -s -w"
 
     build_darwin &
     build_linux &
