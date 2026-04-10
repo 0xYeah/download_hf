@@ -3,6 +3,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +19,10 @@ func downloadSingle(url, dest string, totalSize int64) error {
 		fmt.Printf("🔁 断点续传：已下载 %d 字节\n", startPos)
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("创建请求失败: %w", err)
 	}
@@ -49,14 +53,10 @@ func downloadSingle(url, dest string, totalSize int64) error {
 	defer f.Close()
 
 	downloaded := startPos
-	ctx, cancel := context.WithCancel(context.Background())
-
-	var printerWg sync.WaitGroup
-	printerWg.Add(1)
-	go func() {
-		defer printerWg.Done()
-		runProgressPrinter(ctx, totalSize, &downloaded)
-	}()
+	var bgWg sync.WaitGroup
+	bgWg.Add(2)
+	go func() { defer bgWg.Done(); runProgressPrinter(ctx, totalSize, &downloaded) }()
+	go func() { defer bgWg.Done(); runWatchdog(ctx, cancel, &downloaded) }()
 
 	buf := make([]byte, bufSize)
 	var writeErr error
@@ -73,12 +73,16 @@ func downloadSingle(url, dest string, totalSize int64) error {
 			break
 		}
 		if readErr != nil {
-			writeErr = fmt.Errorf("读取失败: %w", readErr)
+			if errors.Is(readErr, context.Canceled) {
+				writeErr = fmt.Errorf("下载中断（2分钟无数据），下次运行将自动续传")
+			} else {
+				writeErr = fmt.Errorf("读取失败: %w", readErr)
+			}
 			break
 		}
 	}
 
 	cancel()
-	printerWg.Wait()
+	bgWg.Wait()
 	return writeErr
 }

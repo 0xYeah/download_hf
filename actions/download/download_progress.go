@@ -11,6 +11,11 @@ import (
 	"github.com/cheggaaa/pb/v3"
 )
 
+const (
+	idleCheckInterval = 30 * time.Second
+	idleTimeout       = 2 * time.Minute
+)
+
 func runProgressPrinter(ctx context.Context, totalSize int64, downloaded *int64) {
 	if isTerminal() {
 		bar := pb.Full.Start64(totalSize)
@@ -40,6 +45,34 @@ func runProgressPrinter(ctx context.Context, totalSize int64, downloaded *int64)
 				d := atomic.LoadInt64(downloaded)
 				fmt.Printf("\r⏳ %.1f MB / %.1f MB (%d%%)   ",
 					float64(d)/1024/1024, float64(totalSize)/1024/1024, pctOf(d, totalSize))
+			}
+		}
+	}
+}
+
+// runWatchdog cancels ctx if no download progress is observed for idleTimeout.
+func runWatchdog(ctx context.Context, cancel context.CancelFunc, downloaded *int64) {
+	ticker := time.NewTicker(idleCheckInterval)
+	defer ticker.Stop()
+
+	last := atomic.LoadInt64(downloaded)
+	idle := time.Duration(0)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			current := atomic.LoadInt64(downloaded)
+			if current == last {
+				idle += idleCheckInterval
+				if idle >= idleTimeout {
+					cancel()
+					return
+				}
+			} else {
+				idle = 0
+				last = current
 			}
 		}
 	}

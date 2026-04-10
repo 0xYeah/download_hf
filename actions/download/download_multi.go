@@ -13,80 +13,94 @@ import (
 )
 
 func downloadMulti(url, dest string, totalSize int64) error {
+	state := loadOrInitState(dest, totalSize)
+
+	// Pre-allocate file only when needed (preserve existing data for resume)
+	existingSize := int64(0)
+	if info, err := os.Stat(dest); err == nil {
+		existingSize = info.Size()
+	}
+
 	f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer f.Close()
 
-	if err := f.Truncate(totalSize); err != nil {
-		return fmt.Errorf("预分配文件失败: %w", err)
+	if existingSize != totalSize {
+		if err := f.Truncate(totalSize); err != nil {
+			f.Close()
+			os.Remove(dest)
+			return fmt.Errorf("预分配文件失败: %w", err)
+		}
 	}
 
-	var downloaded int64
+	downloaded := state.alreadyDownloaded()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	var printerWg sync.WaitGroup
-	printerWg.Add(1)
-	go func() {
-		defer printerWg.Done()
-		runProgressPrinter(ctx, totalSize, &downloaded)
-	}()
+	var bgWg sync.WaitGroup
+	bgWg.Add(2)
+	go func() { defer bgWg.Done(); runProgressPrinter(ctx, totalSize, &downloaded) }()
+	go func() { defer bgWg.Done(); runWatchdog(ctx, cancel, &downloaded) }()
 
-	segSize := totalSize / defaultSegments
 	errCh := make(chan error, defaultSegments)
 	var wg sync.WaitGroup
 
-	for i := 0; i < defaultSegments; i++ {
-		start := int64(i) * segSize
-		end := start + segSize - 1
-		if i == defaultSegments-1 {
-			end = totalSize - 1
+	for i, seg := range state.Segments {
+		if seg.Done {
+			continue
 		}
 		wg.Add(1)
-		go func(start, end int64) {
+		go func(idx int, seg segmentState) {
 			defer wg.Done()
-			if err := downloadSegment(url, f, start, end, &downloaded); err != nil {
-				errCh <- fmt.Errorf("分段 %d-%d: %w", start, end, err)
+			if err := downloadSegment(ctx, url, f, seg.Start, seg.End, &downloaded); err != nil {
+				cancel() // abort all other segments immediately
+				errCh <- fmt.Errorf("分段 %d-%d: %w", seg.Start, seg.End, err)
+				return
 			}
-		}(start, end)
+			state.markDone(idx, dest) // persist progress for resume
+		}(i, seg)
 	}
 
 	wg.Wait()
 	cancel()
-	printerWg.Wait()
+	bgWg.Wait()
 	close(errCh)
 
 	for e := range errCh {
 		if e != nil {
-			f.Close()
-			os.Remove(dest)
-			return e
+			return e // state file kept on disk for next resume
 		}
 	}
+
+	clearState(dest)
 	return nil
 }
 
-// downloadSegment retries up to segmentRetries times on failure.
-// The atomic downloaded counter is only incremented on success to keep progress accurate.
-func downloadSegment(url string, f *os.File, start, end int64, downloaded *int64) error {
+// downloadSegment retries up to segmentRetries times, rolling back the progress
+// counter before each retry so the display stays accurate.
+func downloadSegment(ctx context.Context, url string, f *os.File, start, end int64, downloaded *int64) error {
 	var lastErr error
 	for attempt := 0; attempt < segmentRetries; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * time.Second)
 		}
-		written, err := tryDownloadSegment(url, f, start, end)
+		written, err := tryDownloadSegment(ctx, url, f, start, end, downloaded)
 		if err == nil {
-			atomic.AddInt64(downloaded, written)
 			return nil
 		}
+		atomic.AddInt64(downloaded, -written) // roll back partial count before retry
 		lastErr = err
 	}
 	return lastErr
 }
 
-func tryDownloadSegment(url string, f *os.File, start, end int64) (written int64, err error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+func tryDownloadSegment(ctx context.Context, url string, f *os.File, start, end int64, downloaded *int64) (written int64, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -112,12 +126,13 @@ func tryDownloadSegment(url string, f *os.File, start, end int64) (written int64
 			}
 			offset += int64(n)
 			written += int64(n)
+			atomic.AddInt64(downloaded, int64(n))
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
-			return written, fmt.Errorf("读取失败: %w", readErr)
+			return written, readErr
 		}
 	}
 	return written, nil

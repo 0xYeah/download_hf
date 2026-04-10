@@ -18,6 +18,9 @@ const (
 	hfMirror    = "https://hf-mirror.com"
 	hfDirect    = "https://huggingface.co"
 	baseDirName = "download_models"
+
+	hfTypeModels   = "models"
+	hfTypeDatasets = "datasets"
 )
 
 var mVersion string // injected via ldflags: -X main.mVersion=...
@@ -30,19 +33,19 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "download_mf [模型仓库ID]",
-		Short: "HuggingFace 模型下载工具（支持断点续传+后台运行）",
+		Use:   "download_hf [仓库ID]",
+		Short: "HuggingFace 模型/数据集下载工具（多段并发+断点续传+后台运行）",
 		Long: `示例：
-  download_mf Jackrong/Qwopus3.5-27B-v3-GGUF
-  download_mf --daemon Jackrong/Qwopus3.5-27B-v3-GGUF
-  download_mf --cn-proxy Jackrong/Qwopus3.5-27B-v3-GGUF
-  download_mf --output /data/models Jackrong/Qwopus3.5-27B-v3-GGUF`,
+  download_hf Jackrong/Qwopus3.5-27B-v3-GGUF
+  download_hf --daemon Jackrong/Qwopus3.5-27B-v3-GGUF
+  download_hf --cn-proxy username/my-dataset
+  download_hf --output /data Jackrong/Qwopus3.5-27B-v3-GGUF`,
 		Args: cobra.ExactArgs(1),
 		Run:  runDownload,
 	}
 
 	rootCmd.Flags().BoolVarP(&daemonMode, "daemon", "d", false, "后台运行（nohup 模式）")
-	rootCmd.Flags().BoolVarP(&cnProxy, "cn-proxy", "p", false, "使用国内镜像（hf-mirror.com），默认直连 huggingface.co")
+	rootCmd.Flags().BoolVarP(&cnProxy, "cn-proxy", "p", false, "使用国内镜像（hf-mirror.com）")
 	rootCmd.Flags().StringVarP(&outputDir, "output", "o", "", "指定下载根目录（默认：~/download_models）")
 	rootCmd.AddCommand(update.Command(mVersion))
 
@@ -67,34 +70,33 @@ func runDownload(_ *cobra.Command, args []string) {
 		return
 	}
 
-	author, modelName, err := parseRepoID(repoID)
+	author, repoName, err := parseRepoID(repoID)
 	if err != nil {
-		fmt.Printf("❌ 解析模型ID失败：%v\n", err)
+		fmt.Printf("❌ 解析仓库ID失败：%v\n", err)
 		os.Exit(1)
 	}
 
-	saveDir, err := getSaveDir(author, modelName)
-	if err != nil {
-		fmt.Printf("❌ 获取保存路径失败：%v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("🚀 开始下载模型：%s\n", repoID)
-	fmt.Printf("🌐 下载源：%s\n", baseURL())
-	fmt.Printf("📂 保存路径：%s\n", saveDir)
-	fmt.Println("⏳ 正在获取文件列表...")
-
-	files, err := listModelFiles(repoID)
+	fmt.Printf("🔍 识别仓库类型：%s\n", repoID)
+	files, repoType, err := detectAndListFiles(baseURL(), repoID)
 	if err != nil {
 		fmt.Printf("❌ 获取文件列表失败：%v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("📦 共 %d 个文件需要下载\n", len(files))
+	saveDir, err := getSaveDir(repoType, author, repoName)
+	if err != nil {
+		fmt.Printf("❌ 获取保存路径失败：%v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("📁 类型：%s\n", repoType)
+	fmt.Printf("🌐 下载源：%s\n", baseURL())
+	fmt.Printf("📂 保存路径：%s\n", saveDir)
+	fmt.Printf("📦 共 %d 个文件\n", len(files))
 
 	successCount, failCount := 0, 0
 	for i, file := range files {
-		fmt.Printf("\n===== 【%d/%d】 下载文件：%s =====\n", i+1, len(files), file)
+		fmt.Printf("\n===== 【%d/%d】 %s =====\n", i+1, len(files), file)
 		if err := download.File(baseURL(), repoID, file, saveDir); err != nil {
 			fmt.Printf("❌ 下载失败：%v\n", err)
 			failCount++
@@ -104,19 +106,75 @@ func runDownload(_ *cobra.Command, args []string) {
 		}
 	}
 
-	fmt.Printf("\n🎉 下载任务完成！成功：%d 个，失败：%d 个\n", successCount, failCount)
-	fmt.Printf("📂 模型保存位置：%s\n", saveDir)
+	fmt.Printf("\n🎉 完成！成功：%d 个，失败：%d 个\n", successCount, failCount)
+	fmt.Printf("📂 保存位置：%s\n", saveDir)
+}
+
+// detectAndListFiles tries models API first, then datasets API.
+// Returns the full recursive file list and the detected repo type.
+func detectAndListFiles(base, repoID string) (files []string, repoType string, err error) {
+	for _, t := range []string{hfTypeModels, hfTypeDatasets} {
+		files, err = listFilesOfType(base, t, repoID, "")
+		if err == nil && len(files) > 0 {
+			return files, t, nil
+		}
+	}
+	return nil, "", fmt.Errorf("找不到仓库 %s（已尝试 models 和 datasets）", repoID)
+}
+
+// hfEntry is a single item returned by the HF tree API.
+type hfEntry struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+}
+
+// listFilesOfType recursively lists all files in a HF repo directory.
+func listFilesOfType(base, repoType, repoID, subPath string) ([]string, error) {
+	apiURL := fmt.Sprintf("%s/api/%s/%s/tree/main", base, repoType, repoID)
+	if subPath != "" {
+		apiURL += "/" + subPath
+	}
+
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API 返回 %d", resp.StatusCode)
+	}
+
+	var entries []hfEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for _, e := range entries {
+		switch e.Type {
+		case "file", "blob":
+			files = append(files, e.Path)
+		case "directory":
+			sub, err := listFilesOfType(base, repoType, repoID, e.Path)
+			if err != nil {
+				return nil, fmt.Errorf("列目录 %s 失败: %w", e.Path, err)
+			}
+			files = append(files, sub...)
+		}
+	}
+	return files, nil
 }
 
 func parseRepoID(repoID string) (string, string, error) {
 	parts := strings.Split(repoID, "/")
 	if len(parts) != 2 {
-		return "", "", fmt.Errorf("格式错误，必须是 作者/模型名")
+		return "", "", fmt.Errorf("格式错误，必须是 作者/仓库名")
 	}
 	return parts[0], parts[1], nil
 }
 
-func getSaveDir(author, modelName string) (string, error) {
+func getSaveDir(repoType, author, repoName string) (string, error) {
 	root := outputDir
 	if root == "" {
 		homeDir, err := os.UserHomeDir()
@@ -125,43 +183,11 @@ func getSaveDir(author, modelName string) (string, error) {
 		}
 		root = filepath.Join(homeDir, baseDirName)
 	}
-	saveDir := filepath.Join(root, author, modelName)
+	saveDir := filepath.Join(root, repoType, author, repoName)
 	if err := os.MkdirAll(saveDir, 0755); err != nil {
 		return "", fmt.Errorf("创建目录失败: %w", err)
 	}
 	return saveDir, nil
-}
-
-// hfFileEntry 对应 HF API 返回的文件列表条目
-type hfFileEntry struct {
-	Type string `json:"type"`
-	Path string `json:"path"`
-}
-
-func listModelFiles(repoID string) ([]string, error) {
-	apiURL := fmt.Sprintf("%s/api/models/%s/tree/main", baseURL(), repoID)
-	resp, err := http.Get(apiURL)
-	if err != nil {
-		return nil, fmt.Errorf("请求文件列表失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API 请求失败，状态码：%d", resp.StatusCode)
-	}
-
-	var entries []hfFileEntry
-	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
-		return nil, fmt.Errorf("解析文件列表失败: %w", err)
-	}
-
-	var files []string
-	for _, entry := range entries {
-		if entry.Type == "file" {
-			files = append(files, entry.Path)
-		}
-	}
-	return files, nil
 }
 
 func daemonize(repoID string) {
