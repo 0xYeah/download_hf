@@ -196,7 +196,7 @@ func daemonize(repoID string) {
 	os.MkdirAll(logDir, 0755)
 	logFile := filepath.Join(logDir, fmt.Sprintf("download_%s.log", strings.ReplaceAll(repoID, "/", "_")))
 
-	logFd, err := os.Create(logFile)
+	logFd, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		fmt.Printf("❌ 创建日志文件失败：%v\n", err)
 		os.Exit(1)

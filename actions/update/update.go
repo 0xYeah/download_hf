@@ -10,9 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 )
+
+var apiClient = &http.Client{Timeout: 30 * time.Second}
 
 // Command returns the update subcommand, wiring in the current binary version.
 func Command(version string) *cobra.Command {
@@ -108,7 +111,7 @@ func detectPlatform() (os_, arch string) {
 }
 
 func fetchLatestVersion() (string, error) {
-	resp, err := http.Get("https://api.github.com/repos/0xYeah/download_hf/releases/latest")
+	resp, err := apiClient.Get("https://api.github.com/repos/0xYeah/download_hf/releases/latest")
 	if err != nil {
 		return "", err
 	}
@@ -193,5 +196,36 @@ func replaceBinary(newPath, currentPath string) error {
 			return fmt.Errorf("重命名旧文件失败：%w", err)
 		}
 	}
-	return os.Rename(newPath, currentPath)
+	if err := os.Rename(newPath, currentPath); err != nil {
+		// Cross-device (tmpDir and execPath on different filesystems): fall back to copy.
+		return copyReplace(newPath, currentPath)
+	}
+	return nil
+}
+
+// copyReplace writes src to a sibling temp file then atomically renames it to dst,
+// avoiding the cross-device limitation of os.Rename across mount points.
+func copyReplace(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("打开新二进制失败：%w", err)
+	}
+	defer in.Close()
+
+	tmp := dst + ".new"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败：%w", err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("写入失败：%w", err)
+	}
+	out.Close()
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("替换失败：%w", err)
+	}
+	return nil
 }
